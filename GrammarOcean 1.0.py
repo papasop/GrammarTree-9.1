@@ -1,24 +1,86 @@
-# ======================================================================
-#  Geometric Turbulence / AMOC mini-pipeline (Appendix Colab, PATCH版)
-#  - PART A: GrammarOcean-A (R constant discovery)
-#  - PART B: GrammarOcean-B (RNet3D: dynamic R(x,t))
-#  - PART C: serious mini-GM AMOC tipping toy (R=0.5 vs 0.305)
-# ======================================================================
+# ============================================================
+#  GrammarOcean 1.0 - Geometric Turbulence / AMOC mini-pipeline
+#  用于论文主文 + 附录的 Colab 版本
+#  - Part 0: q_eq 解析公式 & tipping 解析解 (对应 Eq.9 / Eq.12)
+#  - Part A: GrammarOcean-A (R constant discovery)
+#  - Part B: GrammarOcean-B (RNet3D: dynamic R(x,t))
+#  - Part C: serious mini-GM AMOC tipping toy (R=0.5 vs 0.305)
+# ============================================================
 
 import numpy as np
+import matplotlib.pyplot as plt
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+# ---------------- Matplotlib 设置（可选） ----------------
+plt.rcParams["figure.figsize"] = (6, 4)
+plt.rcParams["font.size"] = 12
 
 # ---------------- Device ----------------
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"[Device] {device}")
 
-# ======================================================================
-# PART A : GrammarOcean-A - 几何常数 R 的自动发现
+# ============================================================
+# Part 0 : 解析几何闭合 q_eq(R,FWF) & tipping 临界点
+#   对应论文中的 Eq.(q_eq) 和敏感性公式，给出 0.077 vs 0.100
+# ============================================================
+
+# 与论文一致的参数
+q0      = 0.05   # baseline overturning
+alpha_R = 0.4    # R 偏离 0.305 后对 baseline 的影响
+beta0   = 0.5    # FWF 对 AMOC 的线性抑制
+beta_R  = 1.0    # R 对 FWF 敏感度的调制
+
+def q_eq_0D(R, FWF):
+    """论文中的几何闭合：q_eq(R,FWF)"""
+    return q0 * (1.0 - alpha_R * (R - 0.305)) \
+           - beta0 * (1.0 + beta_R * (R - 0.305)) * FWF
+
+def analytic_tipping_FWF(R):
+    """令 q_eq(R,FWF)=0，解析求出 FWF_tip(R)"""
+    num = q0 * (1.0 - alpha_R * (R - 0.305))
+    den = beta0 * (1.0 + beta_R * (R - 0.305))
+    return num / den
+
+def run_part0_analytic_demo():
+    print("\n=== Part 0: q_eq 解析结构 & tipping 解析解 ===")
+
+    R_classic = 0.5
+    R_geo     = 0.305
+
+    tip_R05  = analytic_tipping_FWF(R_classic)
+    tip_Rgeo = analytic_tipping_FWF(R_geo)
+
+    print("Analytic tipping points from 0D q_eq:")
+    print(f"  R={R_classic:.3f}: FWF_tip ≈ {tip_R05:.3f}")
+    print(f"  R={R_geo:.3f}:     FWF_tip ≈ {tip_Rgeo:.3f}")
+
+    # 画一下 q_eq(FWF;R) 曲线（论文 2.C 或 3.1 可以用）
+    FWF_list = np.linspace(0.0, 0.14, 100)
+    q_R05  = q_eq_0D(R_classic, FWF_list)
+    q_Rgeo = q_eq_0D(R_geo,     FWF_list)
+
+    plt.figure()
+    plt.axhline(0.0, color="k", linestyle="--", linewidth=1)
+    plt.plot(FWF_list, q_R05,  label=f"R={R_classic:.3f}")
+    plt.plot(FWF_list, q_Rgeo, label=f"R={R_geo:.3f}")
+    plt.xlabel("Freshwater Forcing (FWF)")
+    plt.ylabel("q_eq(R,FWF)")
+    plt.title("Analytic q_eq(FWF; R) from geometric closure")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+run_part0_analytic_demo()
+
+# ============================================================
+# Part A : GrammarOcean-A - 几何常数 R 的自动发现
 #   - A-free : 几何自由极小（弱 ratio 约束）
 #   - A-AMOC : AMOC-consistent（强 ratio 约束，锁向 0.305）
-# ======================================================================
+# ============================================================
 
 def run_partA_free(
     R_init=0.7,
@@ -109,9 +171,9 @@ print(f"AMOC-consistent    -> R_hat ≈ {R_hat_AMOC:9.4f}  (『几何常数 R≈
 print("==================================================")
 
 
-# ======================================================================
-# PART B : GrammarOcean-B - RNet3D 动态 R(x,t) 学习 demo
-# ======================================================================
+# ============================================================
+# Part B : GrammarOcean-B - RNet3D 动态 R(x,t) 学习 demo
+# ============================================================
 
 class RNet3D(nn.Module):
     def __init__(self, in_channels=3):
@@ -172,13 +234,12 @@ def run_partB(
 run_partB()
 
 
-# ======================================================================
-# PART C : 认真版 2D mini-GM AMOC tipping toy
-#   - 不再用退化的 2D 场；改为 0D ODE，但带“GM-like R 影响 + 噪声”
-#   - q(t) 满足：dq/dt = -(q - q_eq(R,FWF) + noise)/τ
+# ============================================================
+# Part C : 认真版 0D mini-GM AMOC tipping toy
+#   - q(t) 满足：dq/dt = -(q - (q_eq(R,FWF) + noise))/τ
 #   - q_eq(R,FWF) = q0*(1 - α_R*(R-0.305)) - β0*(1+β_R*(R-0.305))*FWF
-#   - R=0.5 对 FWF 更敏感，更容易 q<0；R=0.305 更稳定
-# ======================================================================
+#   - R=0.5 更敏感，更容易 q<0；R=0.305 更稳
+# ============================================================
 
 print("\n=== PART C: 2D mini-GM AMOC tipping toy (R=0.5 vs 0.305, serious ODE版) ===")
 
@@ -295,3 +356,4 @@ def run_partC_tipping():
 
 
 results_R05, results_Rgeo = run_partC_tipping()
+
